@@ -1,4 +1,5 @@
 pandas
+<<<<<<< HEAD
 numpy
 scikit-learn
 prophet
@@ -7,3 +8,10 @@ streamlit
 joblib
 altair
 holidays
+=======
+plotly
+streamlit
+prophet
+holidays
+# joblib is no longer needed if using JSON, keeping it light
+>>>>>>> f43de80 (pkl to json)

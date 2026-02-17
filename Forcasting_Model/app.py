@@ -1,42 +1,38 @@
 import streamlit as st
 import pandas as pd
-import joblib
 import plotly.graph_objects as go
-import numpy as np
+import json
+from prophet.serialize import model_from_json
 
 # --- Configuration --- #
-MODEL_PATH = './prophet_model_with_regressors.pkl'
-
-# Set your last training timestamp correctly
+# Recommendation: Convert your .pkl to .json locally first (see instructions below)
+MODEL_PATH = './prophet_model.json' 
 LAST_KNOWN_DS = pd.to_datetime('2025-04-15 23:00:00')
 
 # --- Helper Functions --- #
 
 @st.cache_resource
 def load_model(path):
-    """Loads the Prophet model using joblib."""
+    """Loads the Prophet model using the stable JSON format."""
     try:
-        model = joblib.load(path)
+        with open(path, 'r') as fin:
+            model = model_from_json(fin.read())
         return model
     except FileNotFoundError:
-        st.error(f"Model file not found at {path}. Please ensure the model is saved correctly.")
+        st.error(f"Model file not found at {path}. Ensure you have uploaded the .json model file.")
         return None
-
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        return None
 
 @st.cache_data
 def generate_forecast_data(_model, last_ds, num_hours, user_inputs):
-    """
-    Generates future DataFrame and makes predictions.
-    `_model` is prefixed with underscore to avoid hashing errors.
-    """
-
     # Create future datetime range
     future_ds = pd.date_range(
         start=last_ds + pd.Timedelta(hours=1),
         periods=num_hours,
         freq='h'
     )
-
     future_df = pd.DataFrame({'ds': future_ds})
 
     # Add regressors
@@ -53,77 +49,31 @@ def generate_forecast_data(_model, last_ds, num_hours, user_inputs):
         ['yhat', 'yhat_lower', 'yhat_upper']
     ].round(2)
 
-    results_df.columns = [
-        'Date_Time',
-        'Predicted_Rides',
-        'Lower_Bound',
-        'Upper_Bound'
-    ]
-
+    results_df.columns = ['Date_Time', 'Predicted_Rides', 'Lower_Bound', 'Upper_Bound']
     return results_df, forecast
 
-
 # --- Streamlit App --- #
-
 st.set_page_config(layout="wide", page_title="Hourly Ride Demand Forecast")
 
 st.title("⚡ Hourly Ride Demand Forecast for VoltRide")
 st.markdown("Predict hourly ride demand using a Prophet model with external regressors.")
 
-# Load model
 model_with_regressors = load_model(MODEL_PATH)
 
 if model_with_regressors is None:
     st.stop()
 
-
 # --- Sidebar Controls --- #
-
 st.sidebar.header("📈 Forecast Parameters")
+num_hours = st.sidebar.slider("Hours to Forecast", 1, 24 * 14, 24)
 
-num_hours = st.sidebar.slider(
-    "Number of Hours to Forecast",
-    min_value=1,
-    max_value=24 * 14,
-    value=24
-)
-
-st.sidebar.subheader("External Regressor Values (Constant for Forecast Period)")
-
-temperature = st.sidebar.number_input(
-    "Average Temperature (°C)",
-    min_value=-20.0,
-    max_value=50.0,
-    value=25.0,
-    step=0.1
-)
-
-rainfall = st.sidebar.number_input(
-    "Rainfall (mm)",
-    min_value=0.0,
-    max_value=100.0,
-    value=0.0,
-    step=0.1
-)
-
-humidity = st.sidebar.number_input(
-    "Average Humidity (%)",
-    min_value=0.0,
-    max_value=100.0,
-    value=70.0,
-    step=1.0
-)
-
+st.sidebar.subheader("External Regressors")
+temperature = st.sidebar.number_input("Temp (°C)", -20.0, 50.0, 25.0)
+rainfall = st.sidebar.number_input("Rainfall (mm)", 0.0, 100.0, 0.0)
+humidity = st.sidebar.number_input("Humidity (%)", 0.0, 100.0, 70.0)
 is_holiday = st.sidebar.checkbox("Is Holiday?", value=False)
 is_event = st.sidebar.checkbox("Is Local Event?", value=False)
-
-traffic_index = st.sidebar.number_input(
-    "Traffic Index (0–150)",
-    min_value=0.0,
-    max_value=150.0,
-    value=100.0,
-    step=1.0
-)
+traffic_index = st.sidebar.number_input("Traffic Index (0–150)", 0.0, 150.0, 100.0)
 
 user_inputs = {
     'temperature': temperature,
@@ -134,72 +84,24 @@ user_inputs = {
     'traffic_index': traffic_index
 }
 
-
 # --- Forecast Button --- #
-
 if st.sidebar.button("Generate Forecast"):
-
-    with st.spinner("Generating forecast..."):
-
+    with st.spinner("Generating..."):
         results_df, full_forecast = generate_forecast_data(
-            model_with_regressors,
-            LAST_KNOWN_DS,
-            num_hours,
-            user_inputs
+            model_with_regressors, LAST_KNOWN_DS, num_hours, user_inputs
         )
 
-        st.subheader(f"Hourly Ride Demand Forecast for Next {num_hours} Hours")
+        st.subheader(f"Forecast for Next {num_hours} Hours")
         st.dataframe(results_df.set_index("Date_Time"))
 
-        # --- Plot Forecast --- #
+        # --- Plot --- #
         fig = go.Figure()
+        fig.add_trace(go.Scatter(x=full_forecast['ds'], y=full_forecast['yhat'], name='Predicted', line=dict(color='orange')))
+        fig.add_trace(go.Scatter(x=full_forecast['ds'], y=full_forecast['yhat_lower'], showlegend=False, line=dict(width=0)))
+        fig.add_trace(go.Scatter(x=full_forecast['ds'], y=full_forecast['yhat_upper'], fill='tonexty', 
+                                 fillcolor='rgba(255,165,0,0.2)', line=dict(width=0), name='Interval'))
 
-        # Predicted line
-        fig.add_trace(go.Scatter(
-            x=full_forecast['ds'],
-            y=full_forecast['yhat'],
-            mode='lines',
-            name='Predicted Rides',
-            line=dict(color='orange')
-        ))
-
-        # Lower bound
-        fig.add_trace(go.Scatter(
-            x=full_forecast['ds'],
-            y=full_forecast['yhat_lower'],
-            mode='lines',
-            line=dict(width=0),
-            showlegend=False,
-            hoverinfo='skip'
-        ))
-
-        # Upper bound (shaded area)
-        fig.add_trace(go.Scatter(
-            x=full_forecast['ds'],
-            y=full_forecast['yhat_upper'],
-            fill='tonexty',
-            fillcolor='rgba(255,165,0,0.2)',
-            line=dict(width=0),
-            name='Prediction Interval',
-            hoverinfo='skip'
-        ))
-
-        fig.update_layout(
-            title="Predicted Hourly Ride Demand",
-            xaxis_title="Date & Time",
-            yaxis_title="Predicted Total Rides",
-            hovermode="x unified",
-            height=500
-        )
-
+        fig.update_layout(title="Predicted Ride Demand", xaxis_title="Time", yaxis_title="Rides", hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- Download CSV --- #
-        csv_data = results_df.to_csv(index=False).encode("utf-8")
-
-        st.download_button(
-            label="Download Forecast as CSV",
-            data=csv_data,
-            file_name="hourly_ride_demand_forecast.csv",
-            mime="text/csv"
-        )
+        st.download_button("Download CSV", results_df.to_csv(index=False), "forecast.csv", "text/csv")
